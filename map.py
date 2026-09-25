@@ -59,6 +59,7 @@ class MapManager:
         self.cover_types = []
         self.supply_stations = []
         self.enemy_configs = []
+        self.rooms = []
         self.player_spawn = [100.0, 100.0]
 
         if map_id == 1:
@@ -129,6 +130,16 @@ class MapManager:
             {'pos': [980, 420], 'waypoints': [[980, 160], [980, 680], [760, 340], [980, 160]]},
         ]
         self.supply_stations = []
+        self.rooms = [
+            pygame.Rect(32, 32, 210, 786),
+            pygame.Rect(220, 32, 220, 440),
+            pygame.Rect(220, 470, 220, 348),
+            pygame.Rect(440, 32, 220, 450),
+            pygame.Rect(440, 480, 220, 338),
+            pygame.Rect(660, 32, 200, 470),
+            pygame.Rect(660, 500, 200, 318),
+            pygame.Rect(860, 32, 208, 786),
+        ]
 
 
     # -------------------------------------------------------------
@@ -195,6 +206,15 @@ class MapManager:
             [220.0, 340.0],   # Inside NW HQ
             [1300.0, 920.0],  # Inside SE Depot
         ]
+        self.rooms = [
+            pygame.Rect(170, 170, 280, 240),   # NW HQ
+            pygame.Rect(1110, 170, 280, 240),  # NE Armory
+            pygame.Rect(170, 790, 280, 240),   # SW Substation
+            pygame.Rect(1130, 790, 280, 240),  # SE Depot
+            pygame.Rect(460, 280, 660, 640),   # Central Plaza
+            pygame.Rect(460, 32, 660, 250),    # North Flank
+            pygame.Rect(460, 920, 660, 250),   # South Flank
+        ]
 
     # -------------------------------------------------------------
     # MAP 3: Medium B - Urban Ruins (1600x1200) - 5 Enemies, 2 Supplies
@@ -252,6 +272,15 @@ class MapManager:
         self.supply_stations = [
             [260.0, 240.0],
             [1320.0, 800.0],
+        ]
+        self.rooms = [
+            pygame.Rect(170, 170, 380, 320),   # NW Ruin
+            pygame.Rect(1050, 170, 380, 320),  # NE Ruin
+            pygame.Rect(170, 710, 300, 280),   # SW Shell
+            pygame.Rect(1130, 710, 300, 280),  # SE Shell
+            pygame.Rect(480, 450, 640, 300),   # Central Cross
+            pygame.Rect(540, 32, 520, 420),    # North Avenue
+            pygame.Rect(540, 750, 520, 420),   # South Avenue
         ]
 
     # -------------------------------------------------------------
@@ -312,6 +341,14 @@ class MapManager:
             [400.0, 320.0],    # Inside Hangar 1
             [400.0, 1240.0],   # Inside Hangar 2
             [1780.0, 800.0],   # Inside Flight Ops Tower
+        ]
+        self.rooms = [
+            pygame.Rect(280, 230, 510, 380),   # Hangar 1
+            pygame.Rect(280, 980, 510, 390),   # Hangar 2
+            pygame.Rect(1530, 430, 450, 730),  # East Ops
+            pygame.Rect(790, 400, 740, 800),   # Runway Center
+            pygame.Rect(790, 32, 740, 370),    # North Apron
+            pygame.Rect(790, 1200, 740, 370),  # South Apron
         ]
 
     # -------------------------------------------------------------
@@ -379,6 +416,13 @@ class MapManager:
             [360.0, 1420.0],
             [1950.0, 1420.0],
         ]
+        self.rooms = [
+            pygame.Rect(240, 230, 480, 440),   # Sector 1 NW
+            pygame.Rect(1630, 230, 510, 440),  # Sector 2 NE
+            pygame.Rect(240, 1130, 480, 450),  # Sector 3 SW
+            pygame.Rect(1630, 1130, 510, 450), # Sector 4 SE
+            pygame.Rect(720, 380, 910, 1040),  # Grand Hall
+        ]
 
     def _pre_render_floor(self):
         """Pre-renders an industrial tactical floor grid."""
@@ -424,6 +468,40 @@ class MapManager:
                 return False
         return True
 
+    def breach_walls(self, p1, p2):
+        """Remove interior walls crossed by a player-fired rocket.
+
+        The outer arena boundary remains indestructible so a breach opens a
+        route between spaces without allowing the player to leave the map.
+        Returns the wall/contact-point pairs for visual impact feedback.
+        """
+        breached = []
+        boundary_walls = []
+        for wall in self.walls:
+            is_boundary = (
+                wall.left <= 0 or wall.top <= 0 or
+                wall.right >= self.width or wall.bottom >= self.height
+            )
+            if is_boundary:
+                boundary_walls.append(wall)
+                continue
+
+            hit, point = line_intersects_rect(p1, p2, wall)
+            if hit:
+                breached.append((wall, point))
+
+        if not breached:
+            return []
+
+        breached_ids = {id(wall) for wall, _ in breached}
+        self.walls = [wall for wall in self.walls if id(wall) not in breached_ids]
+        self.cover_types = [
+            (rect, cover_type)
+            for rect, cover_type in self.cover_types
+            if id(rect) not in breached_ids
+        ]
+        return breached
+
     def draw(self, surface, camera_offset=(0, 0)):
         cam_x, cam_y = camera_offset
         sw, sh = surface.get_size()
@@ -458,3 +536,37 @@ class MapManager:
                 pygame.draw.rect(surface, (60, 72, 85), inner)
                 pygame.draw.rect(surface, (100, 118, 138), draw_rect, 2)
                 pygame.draw.circle(surface, (0, 255, 180), (inner.x + 8, inner.y + 8), 3)
+
+    def clear_room_enemies(self, impact_pos, enemies, effect_manager, shooter=None):
+        """
+        Finds the room/space containing impact_pos and eliminates all living enemies inside it.
+        If impact_pos is outside predefined room bounds, clears all enemies with line-of-sight in that area.
+        """
+        target_room = None
+        px, py = impact_pos[0], impact_pos[1]
+        for room in self.rooms:
+            # Expand room rect slightly so wall/doorway edge impacts still register inside
+            if room.inflate(36, 36).collidepoint((px, py)):
+                target_room = room
+                break
+
+        cleared_enemies = []
+        for enemy in enemies:
+            if not enemy.alive:
+                continue
+            ex, ey = enemy.pos[0], enemy.pos[1]
+            if target_room is not None:
+                if target_room.inflate(45, 45).collidepoint((ex, ey)):
+                    cleared_enemies.append(enemy)
+            else:
+                dist = math.hypot(ex - px, ey - py)
+                if dist <= 480.0 and (self.has_line_of_sight(impact_pos, enemy.pos) or dist <= 120.0):
+                    cleared_enemies.append(enemy)
+
+        for enemy in cleared_enemies:
+            if shooter and hasattr(shooter, 'shots_hit'):
+                shooter.shots_hit += 1
+            enemy.take_damage(999, attacker_type='player')
+            effect_manager.add_blood_splatter(enemy.pos[0], enemy.pos[1], 0, count=25)
+
+        return len(cleared_enemies)

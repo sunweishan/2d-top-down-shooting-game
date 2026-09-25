@@ -226,6 +226,154 @@ class TestGameLogicV3(unittest.TestCase):
         self.assertEqual(mgr.handle_pause_click(mgr.pause_btn_rects[1].center, audio.AudioManager()), 'RESTART')
         self.assertEqual(mgr.handle_pause_click(mgr.pause_btn_rects[2].center, audio.AudioManager()), 'MENU')
 
+    def test_loadout_selection_applies_weapon_and_skin(self):
+        """Verify the loadout screen selections reach the gameplay Player entity."""
+        import main
+
+        mgr = ui.UIManager()
+        surface = pygame.Surface((1280, 720))
+        mgr.draw_start_screen(surface, 0)
+        self.assertEqual(mgr.handle_start_click(mgr.start_btn_rect.center, audio.AudioManager()), 'DEPLOY')
+
+        mgr.draw_loadout_screen(surface, 0)
+        self.assertEqual(
+            mgr.handle_loadout_click(mgr.loadout_weapon_rects['SNIPER'].center, audio.AudioManager()),
+            'SELECT_WEAPON'
+        )
+        self.assertEqual(
+            mgr.handle_loadout_click(mgr.loadout_skin_rects['SILVER'].center, audio.AudioManager()),
+            'SELECT_SKIN'
+        )
+        self.assertEqual(mgr.selected_weapon_type, 'SNIPER')
+        self.assertEqual(mgr.selected_skin_id, 'SILVER')
+
+        game = main.Game()
+        game.ui_manager.selected_weapon_type = mgr.selected_weapon_type
+        game.ui_manager.selected_skin_id = mgr.selected_skin_id
+        game.reset_match()
+        self.assertEqual(game.player.weapon_type, 'SNIPER')
+        self.assertEqual(game.player.skin_id, 'SILVER')
+        self.assertIsInstance(game.player.primary_weapon, weapon.SniperRifle)
+
+    def test_primary_weapon_specials(self):
+        """Verify sniper piercing/damage and rocket room-clearance projectile flags."""
+        self.assertEqual(weapon.SniperRifle().damage, 5)
+        self.assertEqual(weapon.SniperRifle().weapon_type, 'SNIPER')
+        self.assertEqual(weapon.RocketLauncher().weapon_type, 'ROCKET')
+        self.assertEqual(weapon.SniperRifle().ammo, 10)
+        self.assertEqual(weapon.RocketLauncher().ammo, 3)
+
+        sniper = bullet.Bullet(100, 100, 0, damage=5, wall_pierce=True, is_sniper=True)
+        rocket = bullet.Bullet(100, 100, 0, damage=10, is_rocket=True)
+        self.assertTrue(sniper.wall_pierce)
+        self.assertTrue(sniper.is_sniper)
+        self.assertTrue(rocket.is_rocket)
+
+    def test_rocket_breaches_walls_but_standard_rounds_do_not(self):
+        """Verify rockets can breach walls while regular rounds cannot kill through them."""
+        map_mgr = map.MapManager(1)
+        effects_mgr = effects.EffectManager()
+        audio_mgr = audio.AudioManager()
+
+        behind_wall = enemy.Enemy(300, 200, max_hp=10)
+        regular_round = bullet.Bullet(100, 200, 0, speed=2500, damage=1)
+        regular_round.update(0.1, map_mgr, [behind_wall], effects_mgr, audio_mgr, (100, 200))
+        self.assertEqual(behind_wall.hp, 10)
+        self.assertFalse(regular_round.alive)
+
+        behind_wall = enemy.Enemy(300, 200, max_hp=10)
+        same_room_enemy = enemy.Enemy(320, 220, max_hp=10)
+        rocket_round = bullet.Bullet(
+            100, 200, 0, speed=2500, damage=10,
+            wall_pierce=True, is_rocket=True
+        )
+        rocket_round.update(
+            0.1, map_mgr, [behind_wall, same_room_enemy],
+            effects_mgr, audio_mgr, (100, 200)
+        )
+        self.assertFalse(behind_wall.alive)
+        self.assertFalse(same_room_enemy.alive)
+        self.assertFalse(any(w.left == 220 and w.top == 120 for w in map_mgr.walls))
+
+        # A rocket entering the room clears an enemy even when the enemy is
+        # off the projectile's center line.
+        open_map = map.MapManager(1)
+        off_line_enemy = enemy.Enemy(320, 220, max_hp=10)
+        entering_rocket = bullet.Bullet(
+            100, 200, 0, speed=2500, damage=10,
+            wall_pierce=True, is_rocket=True
+        )
+        entering_rocket.update(
+            0.1, open_map, [off_line_enemy],
+            effects_mgr, audio_mgr, (100, 200)
+        )
+        self.assertFalse(off_line_enemy.alive)
+
+        shooter = player.Player(100, 100, weapon_type='ROCKET')
+        fired = []
+        shooter.primary_weapon.timer = 0.0
+        shooter.primary_weapon.fire(shooter, fired, effects_mgr, audio_mgr, shooter.pos, is_player=True)
+        self.assertTrue(fired[0].wall_pierce)
+
+        melee_attacker = player.Player(200, 200)
+        melee_attacker.angle_deg = 0.0
+        melee_target = enemy.Enemy(250, 200, max_hp=10)
+        melee_attacker.bayonet.strike(
+            melee_attacker, [melee_target], effects_mgr, audio_mgr,
+            melee_attacker.pos, is_player=True, map_manager=map.MapManager(1)
+        )
+        self.assertEqual(melee_target.hp, 10)
+
+    def test_limited_primary_weapon_ammo(self):
+        """Verify sniper ammo stops at 10 shots and rockets stop at 3 shots."""
+        effects_mgr = effects.EffectManager()
+        audio_mgr = audio.AudioManager()
+
+        sniper_player = player.Player(100, 100, weapon_type='SNIPER')
+        sniper_bullets = []
+        for _ in range(10):
+            sniper_player.primary_weapon.timer = 0.0
+            self.assertTrue(sniper_player.primary_weapon.fire(
+                sniper_player, sniper_bullets, effects_mgr, audio_mgr, sniper_player.pos, is_player=True
+            ))
+        self.assertEqual(sniper_player.primary_weapon.ammo, 0)
+        sniper_player.primary_weapon.timer = 0.0
+        self.assertFalse(sniper_player.primary_weapon.can_fire())
+        self.assertFalse(sniper_player.primary_weapon.fire(
+            sniper_player, sniper_bullets, effects_mgr, audio_mgr, sniper_player.pos, is_player=True
+        ))
+
+        rocket_player = player.Player(100, 100, weapon_type='ROCKET')
+        rocket_bullets = []
+        for _ in range(3):
+            rocket_player.primary_weapon.timer = 0.0
+            self.assertTrue(rocket_player.primary_weapon.fire(
+                rocket_player, rocket_bullets, effects_mgr, audio_mgr, rocket_player.pos, is_player=True
+            ))
+        self.assertEqual(rocket_player.primary_weapon.ammo, 0)
+        rocket_player.primary_weapon.timer = 0.0
+        self.assertFalse(rocket_player.primary_weapon.can_fire())
+
+    def test_easy_grade_a_threshold_is_rebalanced(self):
+        """Verify Easy uses the lower v3 Grade A threshold while Medium/Hard stay at 1200."""
+        self.assertEqual(ui.GRADE_THRESHOLDS['EASY'][0][1], 750)
+        self.assertEqual(ui.GRADE_THRESHOLDS['MEDIUM'][0][1], 1200)
+        self.assertEqual(ui.GRADE_THRESHOLDS['HARD'][0][1], 1200)
+
+    def test_help_modal_scroll_stays_inside_fixed_frame(self):
+        """Verify wheel scrolling is clamped without changing the modal frame size."""
+        mgr = ui.UIManager()
+        surface = pygame.Surface((1280, 720))
+        mgr.draw_help_modal(surface)
+        frame = mgr.help_modal_rect.copy()
+        mgr.handle_help_scroll(-100)
+        self.assertGreaterEqual(mgr.help_scroll_y, 0.0)
+        self.assertLessEqual(mgr.help_scroll_y, mgr.max_help_scroll)
+        mgr.handle_help_scroll(100)
+        self.assertEqual(mgr.help_scroll_y, 0.0)
+        self.assertEqual(mgr.help_modal_rect.size, frame.size)
+        self.assertEqual(mgr.help_modal_rect.size, (820, 510))
+
 
 if __name__ == '__main__':
     unittest.main()

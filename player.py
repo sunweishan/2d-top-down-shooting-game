@@ -7,13 +7,13 @@ health tracking (10 HP), and footstep audio triggers.
 import math
 import pygame
 from sprites import draw_rotated_sprite
-from weapon import MachineGun, Bayonet
+from weapon import MachineGun, SniperRifle, RocketLauncher, Bayonet
 
 
 class Player:
-    """Player controlled soldier (Team Blue). Dies after 10 bullet hits OR 1 knife attack."""
+    """Player controlled soldier (Team Blue). Dies after HP pool is empty OR 1 knife attack."""
 
-    def __init__(self, x, y, max_hp=10):
+    def __init__(self, x, y, max_hp=10, weapon_type='MACHINE_GUN', skin_id='NAVY'):
         self.pos = [float(x), float(y)]
         self.speed = 260.0
         self.hp = max_hp
@@ -22,13 +22,23 @@ class Player:
         self.team = 'player'
         self.angle_deg = 0.0
 
+        # Customization
+        self.weapon_type = weapon_type
+        self.skin_id = skin_id
+
         # Stats tracking for scoring
         self.shots_fired = 0
         self.shots_hit = 0
         self.melee_kills = 0
 
         # Weapons
-        self.machine_gun = MachineGun(cooldown=0.12, spread_deg=2.5, projectile_speed=900.0)
+        if weapon_type == 'SNIPER':
+            self.primary_weapon = SniperRifle()
+        elif weapon_type == 'ROCKET':
+            self.primary_weapon = RocketLauncher()
+        else:
+            self.primary_weapon = MachineGun(cooldown=0.12, spread_deg=2.5, projectile_speed=900.0)
+        self.machine_gun = self.primary_weapon  # Backwards compatibility alias
         self.bayonet = Bayonet(cooldown=0.55, strike_range=68.0, strike_arc_deg=85.0, damage=10)
 
         # Movement & state
@@ -54,7 +64,8 @@ class Player:
     def start_melee_anim(self, duration=0.22):
         self.melee_timer = duration
 
-    def handle_input(self, keys, mouse_buttons, mouse_world_pos, dt, bullets, enemies, effect_manager, audio_manager):
+    def handle_input(self, keys, mouse_buttons, mouse_world_pos, dt, bullets, enemies,
+                     effect_manager, audio_manager, map_manager=None):
         """Processes keyboard and mouse inputs for moving, aiming, and attacking."""
         if not self.alive:
             self.velocity = [0.0, 0.0]
@@ -86,9 +97,9 @@ class Player:
             self.velocity[0] = 0.0
             self.velocity[1] = 0.0
 
-        # 3. Machine Gun Fire (Left Mouse Button)
+        # 3. Primary Weapon Fire (Left Mouse Button)
         if mouse_buttons[0]:
-            self.machine_gun.fire(
+            self.primary_weapon.fire(
                 shooter=self,
                 bullet_list=bullets,
                 effect_manager=effect_manager,
@@ -105,7 +116,8 @@ class Player:
                 effect_manager=effect_manager,
                 audio_manager=audio_manager,
                 listener_pos=self.pos,
-                is_player=True
+                is_player=True,
+                map_manager=map_manager
             )
 
     def update(self, dt, map_manager, audio_manager):
@@ -114,7 +126,7 @@ class Player:
             return
 
         # Update weapons
-        self.machine_gun.update(dt)
+        self.primary_weapon.update(dt)
         self.bayonet.update(dt)
 
         # Update melee animation state
@@ -164,10 +176,10 @@ class Player:
         return self.hp - old_hp
 
     def draw(self, surface, sprite_bank, camera_offset=(0, 0)):
-        """Renders player sprite rotated based on facing angle."""
+        """Renders player sprite rotated based on facing angle with selected skin and weapon."""
         if not self.alive:
             return
 
         state = 'melee' if self.melee_timer > 0 else self.state
-        sprite = sprite_bank.get_sprite('player', state, self.walk_time)
+        sprite = sprite_bank.get_sprite('player', state, self.walk_time, skin=self.skin_id, weapon=self.weapon_type)
         draw_rotated_sprite(surface, sprite, self.angle_deg, self.pos, camera_offset)

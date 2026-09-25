@@ -200,6 +200,50 @@ def _generate_menu_select():
     return _create_wav(samples)
 
 
+def _generate_sniper_shot():
+    """Heavy high-caliber rifle crack with echoing acoustic tail."""
+    duration = 0.38
+    num_samples = int(SAMPLE_RATE * duration)
+    samples = []
+    for i in range(num_samples):
+        t = i / SAMPLE_RATE
+        env = math.exp(-11.0 * t)
+        crack = (random.random() * 2.0 - 1.0) * math.exp(-40.0 * t) * 0.8
+        boom = math.sin(2.0 * math.pi * (140.0 * math.exp(-8.0 * t)) * t) * 0.6
+        tail = math.sin(2.0 * math.pi * 55.0 * t) * 0.25 * math.exp(-5.0 * t)
+        samples.append((crack + boom + tail) * env)
+    return _create_wav(samples)
+
+
+def _generate_rocket_launch():
+    """Rocket propulsion thrust whoosh and ignition roar."""
+    duration = 0.32
+    num_samples = int(SAMPLE_RATE * duration)
+    samples = []
+    for i in range(num_samples):
+        t = i / SAMPLE_RATE
+        env = math.sin(math.pi * min(1.0, t / 0.08)) * math.exp(-4.5 * t)
+        noise = (random.random() * 2.0 - 1.0) * 0.55
+        tone = math.sin(2.0 * math.pi * (180.0 + 80.0 * math.sin(15.0 * t)) * t) * 0.45
+        samples.append((noise + tone) * env * 0.8)
+    return _create_wav(samples)
+
+
+def _generate_explosion():
+    """Deep low-frequency detonation rumble and blast shockwave."""
+    duration = 0.55
+    num_samples = int(SAMPLE_RATE * duration)
+    samples = []
+    for i in range(num_samples):
+        t = i / SAMPLE_RATE
+        env = math.exp(-7.0 * t)
+        blast = (random.random() * 2.0 - 1.0) * math.exp(-22.0 * t) * 0.85
+        rumble = math.sin(2.0 * math.pi * (65.0 * math.exp(-3.5 * t)) * t) * 0.65
+        sub = math.sin(2.0 * math.pi * 38.0 * t) * 0.35 * math.exp(-4.0 * t)
+        samples.append((blast + rumble + sub) * env)
+    return _create_wav(samples)
+
+
 class AudioManager:
     """Manages audio loading, playback, and positional 2D stereo panning."""
 
@@ -222,6 +266,9 @@ class AudioManager:
         """Synthesize all game sound effects and load into Pygame Sound objects."""
         generators = {
             'gunshot': _generate_gunshot,
+            'sniper_shot': _generate_sniper_shot,
+            'rocket_launch': _generate_rocket_launch,
+            'explosion': _generate_explosion,
             'knife_slash': _generate_knife_slash,
             'knife_hit': _generate_knife_hit,
             'hit_body': _generate_bullet_hit_body,

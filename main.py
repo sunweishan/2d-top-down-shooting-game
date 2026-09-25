@@ -16,7 +16,7 @@ from map import MapManager
 from player import Player
 from sprites import get_sprite_bank
 from supply import SupplyManager
-from ui import UIManager, DIFFICULTIES
+from ui import UIManager, DIFFICULTIES, calculate_grade_and_score
 
 SCREEN_WIDTH = 1280
 SCREEN_HEIGHT = 720
@@ -37,7 +37,7 @@ class Game:
         self.audio_manager = AudioManager()
         self.ui_manager = UIManager(SCREEN_WIDTH, SCREEN_HEIGHT)
 
-        self.state = 'START'  # START, PLAYING, PAUSED, HELP, VICTORY, DEFEAT
+        self.state = 'START'  # START, LOADOUT, PLAYING, PAUSED, HELP, VICTORY, DEFEAT
         self.tick_count = 0
         self.stats = {}
 
@@ -58,7 +58,9 @@ class Game:
         self.player = Player(
             x=self.map_manager.player_spawn[0],
             y=self.map_manager.player_spawn[1],
-            max_hp=player_hp
+            max_hp=player_hp,
+            weapon_type=self.ui_manager.selected_weapon_type,
+            skin_id=self.ui_manager.selected_skin_id
         )
 
         # 3. Scaled AI Enemies with Predefined Tactical Waypoints
@@ -102,6 +104,8 @@ class Game:
             'total_enemies': len(self.enemies),
             'difficulty': diff_key,
             'map_id': map_id,
+            'weapon': self.ui_manager.selected_weapon_type,
+            'skin': self.ui_manager.selected_skin_id,
             'cause': 'KILLED IN ACTION'
         }
 
@@ -127,6 +131,8 @@ class Game:
                             self.state = 'PLAYING'
                         elif self.state == 'HELP':
                             self.state = 'START'
+                        elif self.state == 'LOADOUT':
+                            self.state = 'START'
                         elif self.state in ('VICTORY', 'DEFEAT'):
                             self.state = 'START'
                         else:
@@ -148,6 +154,26 @@ class Game:
                             self.ui_manager.help_tab = 1
                         elif event.key in (pygame.K_3, pygame.K_KP3, pygame.K_h):
                             self.ui_manager.help_tab = 2
+                    elif self.state == 'LOADOUT':
+                        if event.key in (pygame.K_1, pygame.K_KP1):
+                            self.ui_manager.selected_weapon_type = 'MACHINE_GUN'
+                        elif event.key in (pygame.K_2, pygame.K_KP2):
+                            self.ui_manager.selected_weapon_type = 'SNIPER'
+                        elif event.key in (pygame.K_3, pygame.K_KP3):
+                            self.ui_manager.selected_weapon_type = 'ROCKET'
+                        elif event.key in (pygame.K_4, pygame.K_KP4):
+                            self.ui_manager.selected_skin_id = 'NAVY'
+                        elif event.key in (pygame.K_5, pygame.K_KP5):
+                            self.ui_manager.selected_skin_id = 'CAMO'
+                        elif event.key in (pygame.K_6, pygame.K_KP6):
+                            self.ui_manager.selected_skin_id = 'CYBER'
+                        elif event.key in (pygame.K_7, pygame.K_KP7):
+                            self.ui_manager.selected_skin_id = 'FLAME'
+                        elif event.key in (pygame.K_8, pygame.K_KP8):
+                            self.ui_manager.selected_skin_id = 'SILVER'
+                        elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                            self.reset_match()
+                            self.state = 'PLAYING'
                     elif self.state == 'START':
                         # Map selection shortcuts: 1 to 5
                         if event.key in (pygame.K_1, pygame.K_KP1):
@@ -187,22 +213,33 @@ class Game:
                             self.audio_manager.play('menu_select', 0.8)
                         # Start Match
                         elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                            self.reset_match()
-                            self.state = 'PLAYING'
+                            self.state = 'LOADOUT'
                     elif self.state in ('VICTORY', 'DEFEAT'):
                         if event.key == pygame.K_r:
                             self.reset_match()
                             self.state = 'PLAYING'
 
+                elif event.type == pygame.MOUSEWHEEL:
+                    if self.state == 'HELP':
+                        self.ui_manager.handle_help_scroll(event.y)
                 elif event.type == pygame.MOUSEBUTTONDOWN:
-                    if event.button == 1:
+                    if self.state == 'HELP' and event.button in (4, 5):
+                        self.ui_manager.handle_help_scroll(1 if event.button == 4 else -1)
+                    elif event.button == 1:
                         if self.state == 'START':
                             action = self.ui_manager.handle_start_click(event.pos, self.audio_manager)
                             if action == 'DEPLOY':
+                                self.state = 'LOADOUT'
+                            elif action == 'HELP':
+                                self.ui_manager.help_scroll_y = 0.0
+                                self.state = 'HELP'
+                        elif self.state == 'LOADOUT':
+                            action = self.ui_manager.handle_loadout_click(event.pos, self.audio_manager)
+                            if action == 'DEPLOY':
                                 self.reset_match()
                                 self.state = 'PLAYING'
-                            elif action == 'HELP':
-                                self.state = 'HELP'
+                            elif action == 'BACK':
+                                self.state = 'START'
                         elif self.state == 'HELP':
                             if not self.ui_manager.handle_help_click(event.pos):
                                 self.state = 'START'
@@ -219,6 +256,9 @@ class Game:
             # State updates and rendering
             if self.state == 'START':
                 self.ui_manager.draw_start_screen(self.screen, self.tick_count)
+                self.ui_manager.draw_crosshair(self.screen, pygame.mouse.get_pos())
+            elif self.state == 'LOADOUT':
+                self.ui_manager.draw_loadout_screen(self.screen, self.tick_count)
                 self.ui_manager.draw_crosshair(self.screen, pygame.mouse.get_pos())
             elif self.state == 'PLAYING':
                 self.update_playing(dt)
@@ -268,7 +308,8 @@ class Game:
             bullets=self.bullets,
             enemies=self.enemies,
             effect_manager=self.effect_manager,
-            audio_manager=self.audio_manager
+            audio_manager=self.audio_manager,
+            map_manager=self.map_manager
         )
 
         # Active Hunting Trigger: Gunfire attracts nearby enemies
@@ -374,6 +415,8 @@ class Game:
             'total_enemies': len(self.enemies),
             'difficulty': self.ui_manager.selected_difficulty,
             'map_id': self.ui_manager.selected_map_id,
+            'weapon': self.player.weapon_type,
+            'skin': self.player.skin_id,
             'cause': 'MISSION ACCOMPLISHED' if is_victory else 'K.I.A. - OPERATOR ELIMINATED'
         }
 
@@ -416,7 +459,14 @@ class Game:
         )
 
         # 9. HUD & Overlays
-        self.ui_manager.draw_hud(self.screen, self.player, self.enemies, self.bullets)
+        self.ui_manager.draw_hud(
+            self.screen,
+            self.player,
+            self.enemies,
+            self.bullets,
+            match_time=self.match_time,
+            current_score=self._get_current_score()
+        )
 
         # 10. Intro sequence animation (if active)
         if self.ui_manager.is_intro_active():
@@ -424,6 +474,21 @@ class Game:
 
         # 11. Crosshair
         self.ui_manager.draw_crosshair(self.screen, pygame.mouse.get_pos())
+
+    def _get_current_score(self):
+        """Return the current combat score using the same metrics as the grade screen."""
+        live_stats = {
+            'time': self.match_time,
+            'shots_fired': self.player.shots_fired,
+            'shots_hit': self.player.shots_hit,
+            'melee_kills': self.player.melee_kills,
+            'hp': self.player.hp,
+            'max_hp': self.player.max_hp,
+            'enemies_killed': sum(1 for e in self.enemies if not e.alive),
+            'total_enemies': len(self.enemies),
+            'difficulty': self.ui_manager.selected_difficulty,
+        }
+        return calculate_grade_and_score(live_stats, is_victory=False)['final_score']
 
 
 if __name__ == '__main__':
