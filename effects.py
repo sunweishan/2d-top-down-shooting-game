@@ -241,6 +241,81 @@ class DeathAnimation:
         surface.blit(rotated, rect.topleft)
 
 
+class ScorchDecal:
+    """Dark charred blast crater on the ground."""
+    def __init__(self, x, y, radius=32):
+        self.x = x
+        self.y = y
+        self.radius = radius
+        self.lifetime = 45.0
+
+    def update(self, dt):
+        self.lifetime -= dt
+
+    def draw(self, surface, camera_offset):
+        if self.lifetime <= 0:
+            return
+        sx = int(self.x - camera_offset[0])
+        sy = int(self.y - camera_offset[1])
+        surf = pygame.Surface((self.radius * 2, self.radius * 2), pygame.SRCALPHA)
+        pygame.draw.circle(surf, (15, 12, 10, 160), (self.radius, self.radius), self.radius)
+        pygame.draw.circle(surf, (8, 6, 5, 200), (self.radius, self.radius), int(self.radius * 0.6))
+        surface.blit(surf, (sx - self.radius, sy - self.radius))
+
+
+class ExplosionVisual:
+    """Expanding fiery fireball, shockwave ring, and smoke cloud."""
+    def __init__(self, x, y, max_radius=160):
+        self.x = x
+        self.y = y
+        self.max_radius = max_radius
+        self.duration = 0.45
+        self.timer = self.duration
+        self.particles = []
+        for _ in range(26):
+            angle = random.uniform(0, 2 * math.pi)
+            spd = random.uniform(80, max_radius * 2.2)
+            self.particles.append({
+                'x': x,
+                'y': y,
+                'vx': math.cos(angle) * spd,
+                'vy': math.sin(angle) * spd,
+                'size': random.uniform(3, 7),
+                'color': random.choice([(255, 240, 100), (255, 160, 30), (255, 70, 20), (140, 140, 140)])
+            })
+
+    def update(self, dt):
+        self.timer -= dt
+        for p in self.particles:
+            p['x'] += p['vx'] * dt
+            p['y'] += p['vy'] * dt
+            p['vx'] *= 0.88
+            p['vy'] *= 0.88
+
+    def draw(self, surface, camera_offset):
+        if self.timer <= 0:
+            return
+        sx = int(self.x - camera_offset[0])
+        sy = int(self.y - camera_offset[1])
+        progress = 1.0 - (self.timer / self.duration)
+        cur_radius = int(self.max_radius * math.sin(progress * math.pi * 0.5))
+
+        for p in self.particles:
+            px = int(p['x'] - camera_offset[0])
+            py = int(p['y'] - camera_offset[1])
+            alpha = max(0, min(255, int(255 * (self.timer / self.duration))))
+            sz = max(1, int(p['size'] * (self.timer / self.duration)))
+            pygame.draw.circle(surface, p['color'], (px, py), sz)
+
+        if cur_radius > 4:
+            ring_surf = pygame.Surface((cur_radius * 2 + 8, cur_radius * 2 + 8), pygame.SRCALPHA)
+            alpha = max(0, min(255, int(220 * (1.0 - progress))))
+            pygame.draw.circle(ring_surf, (255, 180, 50, alpha), (cur_radius + 4, cur_radius + 4), cur_radius, width=max(2, int(6 * (1.0 - progress))))
+            if progress < 0.6:
+                pygame.draw.circle(ring_surf, (255, 255, 230, int(alpha * 0.8)), (cur_radius + 4, cur_radius + 4), int(cur_radius * 0.75), width=2)
+            surface.blit(ring_surf, (sx - cur_radius - 4, sy - cur_radius - 4))
+
+
 class EffectManager:
     """Coordinates lighting halos, particles, decals, screen shake, and death effects."""
 
@@ -248,6 +323,7 @@ class EffectManager:
         self.sparks = []
         self.blood_particles = []
         self.blood_decals = []
+        self.explosions = []
         self.muzzle_flashes = []
         self.slashes = []
         self.death_animations = []
@@ -298,6 +374,12 @@ class EffectManager:
     def add_melee_slash(self, x, y, angle_deg, reach=65.0, is_player=True):
         self.slashes.append(MeleeSlashVisual(x, y, angle_deg, reach, is_player))
 
+    def add_explosion(self, x, y, radius=160):
+        """Creates high-yield blast shockwave, fireball debris, screen shake, and scorch decal."""
+        self.explosions.append(ExplosionVisual(x, y, max_radius=radius))
+        self.blood_decals.append(ScorchDecal(x, y, radius=int(radius * 0.4)))
+        self.add_screen_shake(amplitude=9.5, duration=0.38)
+
     def add_death_effect(self, x, y, team, angle_deg):
         self.death_animations.append(DeathAnimation(x, y, team, angle_deg))
         # Generous blood pool at death site
@@ -326,6 +408,10 @@ class EffectManager:
             d.update(dt)
         self.blood_decals = [d for d in self.blood_decals if d.lifetime > 0]
 
+        for exp in self.explosions:
+            exp.update(dt)
+        self.explosions = [exp for exp in self.explosions if exp.timer > 0]
+
         for f in self.muzzle_flashes:
             f.update(dt)
         self.muzzle_flashes = [f for f in self.muzzle_flashes if f.timer > 0]
@@ -346,11 +432,13 @@ class EffectManager:
             d.draw(surface, camera_offset)
 
     def draw_particles(self, surface, camera_offset):
-        """Draws dynamic sparks, slashes, and blood in front of entities."""
+        """Draws dynamic sparks, slashes, explosions, and blood in front of entities."""
         for p in self.sparks:
             p.draw(surface, camera_offset)
         for p in self.blood_particles:
             p.draw(surface, camera_offset)
+        for exp in self.explosions:
+            exp.draw(surface, camera_offset)
         for f in self.muzzle_flashes:
             f.draw(surface, camera_offset)
         for s in self.slashes:

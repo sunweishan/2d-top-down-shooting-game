@@ -1,11 +1,12 @@
 """
 ui.py - Tactical Heads-Up Display (HUD), start menu with difficulty & map selection,
-minimap, crosshair, notifications, and end-game Grade A-E evaluation.
+loadout customizer, minimap, crosshair, notifications, and dynamic Grade A-E evaluation.
 """
 
 import math
 import pygame
 from map import MAP_METADATA
+from sprites import SKIN_PALETTES, draw_rotated_sprite, get_sprite_bank
 
 DIFFICULTIES = {
     'EASY': {
@@ -34,17 +35,80 @@ DIFFICULTIES = {
     }
 }
 
+WEAPON_CATALOG = {
+    'MACHINE_GUN': {
+        'id': 'MACHINE_GUN',
+        'name': "MACHINE GUN",
+        'badge': "STANDARD AUTO",
+        'type_label': "RAPID FIRE RIFLE",
+        'trait': "Continuous Fire",
+        'desc': "High rate-of-fire assault rifle with unlimited standard ammunition.",
+        'special': "Rapid automatic fire • 1 DMG per hit • High bullet stream",
+        'stats': "ROF: High | DMG: 1 | VEL: 900 m/s",
+        'color': (0, 220, 160),
+        'key': "[ 1 ]",
+    },
+    'SNIPER': {
+        'id': 'SNIPER',
+        'name': "SNIPER RIFLE",
+        'badge': "WALL PENETRATION",
+        'type_label': "ANTI-MATERIEL",
+        'trait': "Pierces Walls",
+        'desc': "High-caliber precision rifle engineered to punch straight through solid obstacles.",
+        'special': "Wall-piercing rounds • 5 DMG per hit • Pinpoint laser precision",
+        'stats': "ROF: Slow | DMG: 5 | VEL: 1400 m/s",
+        'color': (0, 210, 255),
+        'key': "[ 2 ]",
+    },
+    'ROCKET': {
+        'id': 'ROCKET',
+        'name': "ROCKET LAUNCHER",
+        'badge': "WALL-BREACH / CLEARANCE",
+        'type_label': "HE ORDNANCE",
+        'trait': "Piercing Blast",
+        'desc': "Shoulder-fired ordnance that breaches walls before clearing the impact room.",
+        'special': "Wall-piercing rocket • Impact clears all hostiles in the room • 10 DMG",
+        'stats': "ROF: Heavy | DMG: 10 + Clear | VEL: 650 m/s",
+        'color': (255, 130, 40),
+        'key': "[ 3 ]",
+    },
+}
+
+GRADE_THRESHOLDS = {
+    'EASY': [
+        ('A', 750, True, (255, 215, 0), "EXEMPLARY COMBAT PERFORMANCE"),
+        ('B', 550, True, (0, 230, 255), "TACTICAL OBJECTIVE SECURED"),
+        ('C', 400, False, (120, 255, 120), "OPERATION COMPLETED"),
+        ('D', 250, False, (255, 160, 40), "SUB-OPTIMAL ENGAGEMENT"),
+        ('E', 0, False, (255, 50, 50), "MISSION COMPROMISED"),
+    ],
+    'MEDIUM': [
+        ('A', 1200, True, (255, 215, 0), "EXEMPLARY COMBAT PERFORMANCE"),
+        ('B', 900, True, (0, 230, 255), "TACTICAL OBJECTIVE SECURED"),
+        ('C', 650, False, (120, 255, 120), "OPERATION COMPLETED"),
+        ('D', 400, False, (255, 160, 40), "SUB-OPTIMAL ENGAGEMENT"),
+        ('E', 0, False, (255, 50, 50), "MISSION COMPROMISED"),
+    ],
+    'HARD': [
+        ('A', 1200, True, (255, 215, 0), "EXEMPLARY COMBAT PERFORMANCE"),
+        ('B', 900, True, (0, 230, 255), "TACTICAL OBJECTIVE SECURED"),
+        ('C', 650, False, (120, 255, 120), "OPERATION COMPLETED"),
+        ('D', 400, False, (255, 160, 40), "SUB-OPTIMAL ENGAGEMENT"),
+        ('E', 0, False, (255, 50, 50), "MISSION COMPROMISED"),
+    ],
+}
+
 
 def calculate_grade_and_score(stats, is_victory=True):
     """
-    Computes final performance score and assigns Grade A through E.
+    Computes final performance score and assigns Grade A through E dynamically by difficulty.
     Metrics:
     - Kills / Total ratio
     - Remaining HP / Max HP ratio
     - Completion time
     - Shooting accuracy (shots_hit / shots_fired)
     - Melee kills bonus
-    - Difficulty multiplier
+    - Difficulty multiplier & difficulty-tuned thresholds
     """
     enemies_killed = stats.get('enemies_killed', 0)
     total_enemies = max(1, stats.get('total_enemies', 1))
@@ -85,27 +149,17 @@ def calculate_grade_and_score(stats, is_victory=True):
     # Apply Difficulty Multiplier
     final_score = int(raw_score * diff_mult)
 
-    # Grade Assignment based on combined performance score
-    if final_score >= 1200 and is_victory:
-        grade = 'A'
-        grade_color = (255, 215, 0)      # Tactical Gold
-        verdict = "EXEMPLARY COMBAT PERFORMANCE"
-    elif final_score >= 900 and is_victory:
-        grade = 'B'
-        grade_color = (0, 230, 255)      # Cyber Cyan
-        verdict = "TACTICAL OBJECTIVE SECURED"
-    elif final_score >= 650:
-        grade = 'C'
-        grade_color = (120, 255, 120)    # Standard Green
-        verdict = "OPERATION COMPLETED"
-    elif final_score >= 400:
-        grade = 'D'
-        grade_color = (255, 160, 40)     # Warning Amber
-        verdict = "SUB-OPTIMAL ENGAGEMENT"
-    else:
-        grade = 'E'
-        grade_color = (255, 50, 50)      # Critical Red
-        verdict = "MISSION COMPROMISED"
+    # Dynamic Grade Assignment based on difficulty-specific thresholds
+    thresholds = GRADE_THRESHOLDS.get(diff_key, GRADE_THRESHOLDS['MEDIUM'])
+    grade = 'E'
+    grade_color = (255, 50, 50)
+    verdict = "MISSION COMPROMISED"
+    for g, min_pts, req_vic, gcol, gverdict in thresholds:
+        if final_score >= min_pts and (not req_vic or is_victory):
+            grade = g
+            grade_color = gcol
+            verdict = gverdict
+            break
 
     return {
         'grade': grade,
@@ -152,9 +206,20 @@ class UIManager:
         self.start_btn_rect = pygame.Rect(0, 0, 0, 0)
         self.help_btn_rect = pygame.Rect(0, 0, 0, 0)
 
-        # Help modal state
+        # Customization selections
+        self.selected_weapon_type = 'MACHINE_GUN'
+        self.selected_skin_id = 'NAVY'
+        self.loadout_weapon_rects = {}
+        self.loadout_skin_rects = {}
+        self.loadout_deploy_rect = pygame.Rect(0, 0, 0, 0)
+        self.loadout_back_rect = pygame.Rect(0, 0, 0, 0)
+
+        # Help modal state & scroll support
         self.help_tab = 0  # 0=EASY, 1=MEDIUM, 2=HARD
         self.help_tab_rects = []
+        self.help_scroll_y = 0.0
+        self.max_help_scroll = 180.0
+        self.help_modal_rect = pygame.Rect(0, 0, 0, 0)
 
         # Pause button rects (set by draw_pause_screen)
         self.pause_btn_rects = []
@@ -181,8 +246,8 @@ class UIManager:
     def is_intro_active(self):
         return self.intro_timer > 0
 
-    def draw_hud(self, surface, player, enemies, bullets):
-        """Draws player health, enemies remaining, bayonet cooldown, notification, and minimap."""
+    def draw_hud(self, surface, player, enemies, bullets, match_time=0.0, current_score=0):
+        """Draws player health, enemies remaining, bayonet cooldown, notification, minimap, and bottom-right metrics."""
         # 1. Dynamic Health Bar
         self._draw_health_bar(surface, player)
 
@@ -195,7 +260,10 @@ class UIManager:
         # 4. Tactical Minimap
         self._draw_minimap(surface, player, enemies)
 
-        # 5. Supply Notification Toast
+        # 5. Bottom-Right Combat Metrics (Timer, Score & Limited Ammo)
+        self._draw_combat_metrics(surface, player, match_time, current_score)
+
+        # 6. Supply Notification Toast
         if self.notification_timer > 0 and self.notification_text:
             self._draw_notification(surface)
 
@@ -278,11 +346,34 @@ class UIManager:
         x = 24
         y = self.screen_h - 74
 
-        panel_rect = pygame.Rect(x - 8, y - 6, 330, 58)
+        panel_rect = pygame.Rect(x - 8, y - 6, 360, 58)
         pygame.draw.rect(surface, (14, 18, 24, 215), panel_rect, border_radius=6)
         pygame.draw.rect(surface, (45, 60, 80), panel_rect, 2, border_radius=6)
 
-        mg_txt = self.font_sm.render("[L-CLICK] MACHINE GUN: READY (UNLIMITED)", True, (200, 220, 245))
+        wp = getattr(player, 'primary_weapon', player.machine_gun)
+        wp_type = getattr(wp, 'weapon_type', 'MACHINE_GUN')
+        wp_short_name = {'SNIPER': 'SNIPER', 'ROCKET': 'ROCKET'}.get(wp_type, 'MACHINE GUN')
+        ammo = getattr(wp, 'ammo', None)
+        ammo_label = "UNLIMITED" if ammo is None else f"{ammo}/{wp.max_ammo}"
+
+        if ammo is not None and ammo <= 0:
+            wp_col = (255, 70, 70)
+            wp_txt_str = f"[L-CLICK] {wp_short_name}: EMPTY | AMMO {ammo_label}"
+        elif wp.can_fire():
+            if wp_type == 'SNIPER':
+                wp_col = (0, 220, 255)
+                wp_txt_str = f"[L-CLICK] {wp_short_name}: READY | {ammo_label} | PIERCE 5"
+            elif wp_type == 'ROCKET':
+                wp_col = (255, 140, 40)
+                wp_txt_str = f"[L-CLICK] {wp_short_name}: READY | {ammo_label} | WALL-BREACH"
+            else:
+                wp_col = (200, 220, 245)
+                wp_txt_str = f"[L-CLICK] {wp_short_name}: READY | AUTO"
+        else:
+            wp_col = (180, 195, 210)
+            wp_txt_str = f"[L-CLICK] {wp_short_name}: CYCLING ({wp.timer:.1f}s) | {ammo_label}"
+
+        mg_txt = self.font_sm.render(wp_txt_str, True, wp_col)
         surface.blit(mg_txt, (x, y))
 
         if player.bayonet.can_strike():
@@ -294,6 +385,38 @@ class UIManager:
 
         k_txt = self.font_sm.render(knife_str, True, knife_col)
         surface.blit(k_txt, (x, y + 26))
+
+    def _draw_combat_metrics(self, surface, player, match_time, current_score):
+        """Displays timer, score, and limited-weapon ammo in the bottom-right."""
+        panel_w = 210
+        primary_weapon = getattr(player, 'primary_weapon', None)
+        ammo = getattr(primary_weapon, 'ammo', None)
+        max_ammo = getattr(primary_weapon, 'max_ammo', None)
+        has_limited_ammo = ammo is not None and max_ammo is not None
+        panel_h = 84 if has_limited_ammo else 58
+        x = self.screen_w - panel_w - 20
+        y = self.screen_h - (100 if has_limited_ammo else 74)
+
+        panel_rect = pygame.Rect(x, y - 6, panel_w, panel_h)
+        pygame.draw.rect(surface, (14, 18, 24, 215), panel_rect, border_radius=6)
+        pygame.draw.rect(surface, (45, 60, 80), panel_rect, 2, border_radius=6)
+
+        # Elapsed time MM:SS
+        mins = int(match_time // 60)
+        secs = int(match_time % 60)
+        time_str = f"TIME: {mins:02d}:{secs:02d}"
+        time_surf = self.font_main.render(time_str, True, (0, 220, 255))
+        surface.blit(time_surf, (x + 16, y + 2))
+
+        # Real-time score
+        score_str = f"SCORE: {int(current_score)}"
+        score_surf = self.font_main.render(score_str, True, (255, 215, 80))
+        surface.blit(score_surf, (x + 16, y + 26))
+
+        if has_limited_ammo:
+            ammo_str = f"AMMO: {int(ammo)}/{int(max_ammo)}"
+            ammo_surf = self.font_main.render(ammo_str, True, (255, 140, 60) if ammo <= 0 else (255, 190, 90))
+            surface.blit(ammo_surf, (x + 16, y + 50))
 
     def _draw_minimap(self, surface, player, enemies):
         mm_w = 160
@@ -500,7 +623,7 @@ class UIManager:
         pygame.draw.rect(surface, btn_col, self.start_btn_rect, border_radius=8)
         pygame.draw.rect(surface, (0, 255, 180), self.start_btn_rect, 2, border_radius=8)
 
-        deploy_txt = self.font_main.render("COMMENCE OPERATION [ENTER / SPACE]", True, (255, 255, 255))
+        deploy_txt = self.font_main.render("CONTINUE TO LOADOUT [ENTER / SPACE]", True, (255, 255, 255))
         surface.blit(deploy_txt, (cx - deploy_txt.get_width() // 2, deploy_y + 14))
 
         # Controls hint bar
@@ -531,7 +654,10 @@ class UIManager:
         surface.blit(hint2, (self.screen_w - hint2.get_width() - 20, self.screen_h - help_bh - 38))
 
     def draw_help_modal(self, surface):
-        """Multi-page Help modal with EASY / MEDIUM / HARD tabs showing scoring breakdown."""
+        """
+        Multi-page Help modal with EASY / MEDIUM / HARD tabs showing scoring breakdown.
+        Content is clipped to a fixed viewport and smoothly scrollable via mouse wheel.
+        """
         # Dim overlay
         overlay = pygame.Surface((self.screen_w, self.screen_h), pygame.SRCALPHA)
         overlay.fill((5, 8, 14, 210))
@@ -541,8 +667,9 @@ class UIManager:
         modal_h = 510
         modal_x = self.screen_w // 2 - modal_w // 2
         modal_y = self.screen_h // 2 - modal_h // 2
+        self.help_modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
 
-        # Modal background
+        # Modal background (Strictly maintains fixed 820x510 blue frame)
         pygame.draw.rect(surface, (14, 20, 30), (modal_x, modal_y, modal_w, modal_h), border_radius=10)
         pygame.draw.rect(surface, (0, 160, 255), (modal_x, modal_y, modal_w, modal_h), 2, border_radius=10)
 
@@ -552,12 +679,12 @@ class UIManager:
             modal_x + modal_w // 2 - title_surf.get_width() // 2, modal_y + 14
         ))
 
-        # Tab buttons: EASY / MEDIUM / HARD
+        # Tab buttons: EASY / MEDIUM / HARD (Fixed at top)
         tab_labels = ['EASY', 'MEDIUM', 'HARD']
         tab_colors = [(0, 220, 140), (255, 190, 40), (255, 60, 60)]
         tab_w = 160
         tab_h = 34
-        tab_y = modal_y + 62
+        tab_y = modal_y + 60
         total_tab_w = len(tab_labels) * tab_w + (len(tab_labels) - 1) * 12
         tab_start_x = modal_x + modal_w // 2 - total_tab_w // 2
         self.help_tab_rects = []
@@ -574,27 +701,33 @@ class UIManager:
             t = self.font_main.render(lbl, True, tcol if is_active else (130, 150, 170))
             surface.blit(t, (tr.centerx - t.get_width() // 2, tr.centery - t.get_height() // 2))
 
-        # Content area
-        content_y = tab_y + tab_h + 14
-        content_x = modal_x + 36
-        right_col_x = content_x + 300
+        # Scrollable Viewport Configuration
+        view_x = modal_x + 16
+        view_y = modal_y + 104
+        view_w = modal_w - 32
+        view_h = modal_h - 140  # 370px visible height inside fixed modal
+        clip_rect = pygame.Rect(view_x, view_y, view_w, view_h)
+
         diff_keys_list = ['EASY', 'MEDIUM', 'HARD']
         dk = diff_keys_list[self.help_tab]
         dinfo = DIFFICULTIES[dk]
 
-        pygame.draw.line(surface, (40, 60, 85),
-                         (modal_x + 20, content_y), (modal_x + modal_w - 20, content_y), 1)
-        content_y += 10
+        # Enable clipping so content never overflows the blue box border
+        old_clip = surface.get_clip()
+        surface.set_clip(clip_rect)
+
+        content_x = modal_x + 36
+        content_y = view_y + 8 - int(self.help_scroll_y)
 
         def row(label, value, lcol=(200, 220, 245), vcol=(0, 230, 180)):
             nonlocal content_y
             ls = self.font_main.render(label, True, lcol)
             vs = self.font_main.render(str(value), True, vcol)
             surface.blit(ls, (content_x, content_y))
-            surface.blit(vs, (modal_x + modal_w - 36 - vs.get_width(), content_y))
+            surface.blit(vs, (modal_x + modal_w - 56 - vs.get_width(), content_y))
             content_y += 26
 
-        # Difficulty config section
+        # 1. Difficulty config section
         header = self.font_main.render(f"[ {dk} DIFFICULTY CONFIGURATION ]", True, dinfo['color'])
         surface.blit(header, (content_x, content_y))
         content_y += 28
@@ -611,10 +744,10 @@ class UIManager:
 
         content_y += 4
         pygame.draw.line(surface, (40, 60, 85),
-                         (modal_x + 20, content_y), (modal_x + modal_w - 20, content_y), 1)
+                         (modal_x + 20, content_y), (modal_x + modal_w - 36, content_y), 1)
         content_y += 10
 
-        # Scoring formula section
+        # 2. Scoring formula section
         score_header = self.font_main.render("[ SCORING FORMULA ]", True, (255, 220, 120))
         surface.blit(score_header, (content_x, content_y))
         content_y += 26
@@ -636,34 +769,318 @@ class UIManager:
 
         content_y += 6
         pygame.draw.line(surface, (40, 60, 85),
-                         (modal_x + 20, content_y), (modal_x + modal_w - 20, content_y), 1)
+                         (modal_x + 20, content_y), (modal_x + modal_w - 36, content_y), 1)
         content_y += 10
 
-        # Grade thresholds section
-        grade_header = self.font_main.render("[ GRADE THRESHOLDS ]", True, (255, 220, 120))
+        # 3. Dynamic Grade thresholds section tuned to the active difficulty
+        grade_header = self.font_main.render(f"[ {dk} GRADE THRESHOLDS ]", True, (255, 220, 120))
         surface.blit(grade_header, (content_x, content_y))
         content_y += 24
 
-        grades = [
-            ("A", f">= 1200 pts  (Victory required)", (255, 215, 0)),
-            ("B", f">= 900 pts   (Victory required)", (0, 230, 255)),
-            ("C", f">= 650 pts", (120, 255, 120)),
-            ("D", f">= 400 pts", (255, 160, 40)),
-            ("E", f"< 400 pts", (255, 50, 50)),
-        ]
-        for g, desc, gcol in grades:
+        thresh = GRADE_THRESHOLDS.get(dk, GRADE_THRESHOLDS['MEDIUM'])
+        d_cutoff = 400
+        for gl, mp, _, _, _ in thresh:
+            if gl == 'D':
+                d_cutoff = mp
+                break
+
+        for g, min_pts, req_vic, gcol, _ in thresh:
+            vic_str = "  (Victory required)" if req_vic else ""
+            if min_pts > 0:
+                desc = f">= {min_pts} pts{vic_str}"
+            else:
+                desc = f"< {d_cutoff} pts"
             gs = self.font_main.render(f"  Grade {g}:", True, gcol)
             ds = self.font_sm.render(desc, True, (180, 200, 220))
             surface.blit(gs, (content_x, content_y))
             surface.blit(ds, (content_x + 120, content_y + 3))
             content_y += 22
 
-        # Close hint
-        close_txt = self.font_sm.render("[ ESC ] or [ CLICK OUTSIDE ] to close", True, (100, 130, 160))
+        content_y += 12
+
+        # Measure total content height to compute maximum scroll range
+        total_content_height = (content_y + int(self.help_scroll_y)) - view_y
+        self.max_help_scroll = max(0.0, float(total_content_height - view_h + 10))
+
+        # Restore original clipping
+        surface.set_clip(old_clip)
+
+        # Draw sleek scrollbar on the right side if content is longer than viewport
+        if self.max_help_scroll > 0:
+            track_x = modal_x + modal_w - 20
+            track_y = view_y + 6
+            track_h = view_h - 12
+            pygame.draw.rect(surface, (20, 28, 40), (track_x, track_y, 6, track_h), border_radius=3)
+            thumb_h = max(24, int(track_h * (view_h / max(view_h + 1, total_content_height))))
+            scroll_ratio = self.help_scroll_y / self.max_help_scroll if self.max_help_scroll > 0 else 0.0
+            thumb_y = track_y + int(scroll_ratio * (track_h - thumb_h))
+            pygame.draw.rect(surface, (0, 180, 240), (track_x, thumb_y, 6, thumb_h), border_radius=3)
+
+        # Fixed close and scroll hint at bottom
+        close_txt = self.font_sm.render(
+            "[ ESC ] or [ CLICK OUTSIDE ] to close   •   [ MOUSE WHEEL ] to scroll",
+            True, (120, 150, 185)
+        )
         surface.blit(close_txt, (
             modal_x + modal_w // 2 - close_txt.get_width() // 2,
             modal_y + modal_h - 26
         ))
+
+    def handle_help_scroll(self, wheel_y):
+        """Scrolls the help modal viewport via mouse wheel."""
+        self.help_scroll_y = max(0.0, min(self.max_help_scroll, self.help_scroll_y - wheel_y * 32.0))
+
+    def handle_help_click(self, mouse_pos):
+        """Handles tab clicks and keeps clicks inside the fixed modal from closing it."""
+        for i, tr in enumerate(self.help_tab_rects):
+            if tr.collidepoint(mouse_pos):
+                if self.help_tab != i:
+                    self.help_tab = i
+                    self.help_scroll_y = 0.0
+                return True
+        return self.help_modal_rect.collidepoint(mouse_pos)
+
+    def draw_loadout_screen(self, surface, tick_count):
+        """
+        Interactive loadout & customization screen allowing players to select their
+        primary weapon (Machine Gun, Sniper Rifle, Rocket Launcher) and character skin.
+        """
+        surface.fill((12, 16, 22))
+
+        # Ambient grid
+        for gx in range(0, self.screen_w, 64):
+            pygame.draw.line(surface, (20, 26, 36), (gx, 0), (gx, self.screen_h), 1)
+        for gy in range(0, self.screen_h, 64):
+            pygame.draw.line(surface, (20, 26, 36), (0, gy), (self.screen_w, gy), 1)
+
+        cx = self.screen_w // 2
+
+        # Header Title
+        title = self.font_title.render("MISSION LOADOUT & CUSTOMIZATION", True, (0, 220, 255))
+        subtitle = self.font_main.render("SELECT PRIMARY WEAPON & OPERATOR COMBAT SUIT", True, (160, 190, 220))
+        surface.blit(title, (cx - title.get_width() // 2, 22))
+        surface.blit(subtitle, (cx - subtitle.get_width() // 2, 64))
+
+        # -------------------------------------------------------------
+        # Left Panel: Operator Live Inspection Booth
+        # -------------------------------------------------------------
+        left_w = 330
+        left_h = 510
+        left_x = 45
+        left_y = 100
+        left_rect = pygame.Rect(left_x, left_y, left_w, left_h)
+        pygame.draw.rect(surface, (16, 22, 32), left_rect, border_radius=8)
+        pygame.draw.rect(surface, (45, 65, 90), left_rect, 2, border_radius=8)
+
+        op_header = self.font_main.render("[ OPERATOR INSPECTION ]", True, (0, 220, 255))
+        surface.blit(op_header, (left_rect.centerx - op_header.get_width() // 2, left_y + 14))
+
+        # Staging pedestal
+        pedestal_cx = left_rect.centerx
+        pedestal_cy = left_y + 175
+        pygame.draw.ellipse(surface, (22, 32, 48), (pedestal_cx - 85, pedestal_cy - 45, 170, 90))
+        pygame.draw.ellipse(surface, (0, 180, 240), (pedestal_cx - 85, pedestal_cy - 45, 170, 90), 2)
+        # Scanner ring animation
+        scan_angle = (tick_count * 2.5) % 360
+        srad = math.radians(scan_angle)
+        sx = pedestal_cx + math.cos(srad) * 65.0
+        sy = pedestal_cy + math.sin(srad) * 32.0
+        pygame.draw.circle(surface, (0, 255, 200), (int(sx), int(sy)), 4)
+
+        # Draw live rotating soldier sprite
+        bank = get_sprite_bank()
+        facing_angle = (tick_count * 1.5) % 360
+        sprite = bank.get_sprite('player', 'idle', tick_count * 0.05, skin=self.selected_skin_id, weapon=self.selected_weapon_type)
+        big_sprite = pygame.transform.scale(sprite, (96, 96))
+        rot_sprite = pygame.transform.rotate(big_sprite, -facing_angle)
+        rect_rot = rot_sprite.get_rect(center=(pedestal_cx, pedestal_cy - 10))
+        surface.blit(rot_sprite, rect_rot.topleft)
+
+        # Current Loadout Specs inside left card
+        curr_skin = SKIN_PALETTES.get(self.selected_skin_id, SKIN_PALETTES['NAVY'])
+        curr_wp = WEAPON_CATALOG.get(self.selected_weapon_type, WEAPON_CATALOG['MACHINE_GUN'])
+
+        box_y = left_y + 265
+        pygame.draw.line(surface, (35, 50, 70), (left_x + 16, box_y), (left_x + left_w - 16, box_y), 1)
+
+        # Suit summary
+        s_lbl = self.font_sm.render("OPERATOR SUIT:", True, (140, 160, 190))
+        s_val = self.font_main.render(curr_skin['name'], True, curr_skin['accent_color'])
+        s_desc = self.font_sm.render(curr_skin['desc'], True, (170, 185, 205))
+        surface.blit(s_lbl, (left_x + 20, box_y + 12))
+        surface.blit(s_val, (left_x + 20, box_y + 28))
+        surface.blit(s_desc, (left_x + 20, box_y + 50))
+
+        # Weapon summary
+        box_y2 = box_y + 85
+        pygame.draw.line(surface, (35, 50, 70), (left_x + 16, box_y2), (left_x + left_w - 16, box_y2), 1)
+        w_lbl = self.font_sm.render("PRIMARY WEAPON:", True, (140, 160, 190))
+        w_val = self.font_main.render(curr_wp['name'], True, curr_wp['color'])
+        w_sp = self.font_sm.render(f"Special: {curr_wp['trait']}", True, (255, 220, 100))
+        w_st = self.font_sm.render(curr_wp['stats'], True, (160, 210, 240))
+        surface.blit(w_lbl, (left_x + 20, box_y2 + 12))
+        surface.blit(w_val, (left_x + 20, box_y2 + 28))
+        surface.blit(w_sp, (left_x + 20, box_y2 + 50))
+        surface.blit(w_st, (left_x + 20, box_y2 + 70))
+
+        # Tactical note
+        note = self.font_sm.render("Tactical Bayonet is equipped as standard melee.", True, (100, 130, 160))
+        surface.blit(note, (left_rect.centerx - note.get_width() // 2, left_y + left_h - 26))
+
+        # -------------------------------------------------------------
+        # Right Section: Weapon Selection (Top) & Skin Selection (Bottom)
+        # -------------------------------------------------------------
+        right_x = 400
+
+        # 1. Weapon Selection Cards
+        wp_y = 100
+        wp_lbl = self.font_main.render("1. SELECT PRIMARY WEAPON ([1] / [2] / [3] OR CLICK)", True, (255, 220, 120))
+        surface.blit(wp_lbl, (right_x, wp_y))
+
+        wp_card_w = 265
+        wp_card_h = 160
+        self.loadout_weapon_rects = {}
+        for idx, (wid, winfo) in enumerate(WEAPON_CATALOG.items()):
+            wx = right_x + idx * (wp_card_w + 20)
+            wy = wp_y + 26
+            wrect = pygame.Rect(wx, wy, wp_card_w, wp_card_h)
+            self.loadout_weapon_rects[wid] = wrect
+
+            is_sel = (self.selected_weapon_type == wid)
+            bg = (24, 42, 60) if is_sel else (16, 22, 30)
+            bcol = winfo['color'] if is_sel else (45, 55, 70)
+            bw = 3 if is_sel else 1
+            pygame.draw.rect(surface, bg, wrect, border_radius=8)
+            pygame.draw.rect(surface, bcol, wrect, bw, border_radius=8)
+
+            badge_surf = self.font_sm.render(winfo['key'], True, (255, 255, 255) if is_sel else (140, 160, 180))
+            surface.blit(badge_surf, (wx + 14, wy + 10))
+
+            if is_sel:
+                sel_tag = self.font_sm.render("EQUIPPED", True, (0, 255, 180))
+                surface.blit(sel_tag, (wx + wp_card_w - sel_tag.get_width() - 14, wy + 10))
+
+            wname = self.font_main.render(winfo['name'], True, winfo['color'] if is_sel else (220, 230, 245))
+            surface.blit(wname, (wx + 14, wy + 30))
+
+            trait_tag = self.font_sm.render(f"★ {winfo['badge']}", True, (255, 215, 80) if is_sel else (180, 170, 120))
+            surface.blit(trait_tag, (wx + 14, wy + 54))
+
+            # Wrap special-ability copy to the card's inner width.
+            max_text_w = wp_card_w - 28
+            spec_lines = []
+            current_line = ""
+            for word in winfo['special'].split():
+                candidate = f"{current_line} {word}".strip()
+                if current_line and self.font_sm.size(candidate)[0] > max_text_w:
+                    spec_lines.append(current_line)
+                    current_line = word
+                else:
+                    current_line = candidate
+            if current_line:
+                spec_lines.append(current_line)
+
+            for line_idx, line in enumerate(spec_lines[:3]):
+                spec_txt = self.font_sm.render(line, True, (200, 220, 240))
+                surface.blit(spec_txt, (wx + 14, wy + 80 + line_idx * 16))
+
+            stats_txt = self.font_sm.render(winfo['stats'], True, (130, 160, 190))
+            surface.blit(stats_txt, (wx + 14, wy + 132))
+
+        # 2. Skin Selection Cards
+        skin_y = 315
+        skin_lbl = self.font_main.render("2. SELECT OPERATOR COMBAT SUIT / SKIN ([4]-[8] OR CLICK)", True, (255, 220, 120))
+        surface.blit(skin_lbl, (right_x, skin_y))
+
+        sk_card_w = 152
+        sk_card_h = 160
+        self.loadout_skin_rects = {}
+        skin_keys = list(SKIN_PALETTES.keys())
+        for idx, skid in enumerate(skin_keys):
+            skinfo = SKIN_PALETTES[skid]
+            sx = right_x + idx * (sk_card_w + 18)
+            sy = skin_y + 26
+            skrect = pygame.Rect(sx, sy, sk_card_w, sk_card_h)
+            self.loadout_skin_rects[skid] = skrect
+
+            is_sel = (self.selected_skin_id == skid)
+            bg = (24, 40, 56) if is_sel else (16, 22, 30)
+            bcol = skinfo['accent_color'] if is_sel else (45, 55, 70)
+            bw = 3 if is_sel else 1
+            pygame.draw.rect(surface, bg, skrect, border_radius=8)
+            pygame.draw.rect(surface, bcol, skrect, bw, border_radius=8)
+
+            key_tag = self.font_sm.render(f"[{idx + 4}]", True, (140, 160, 180))
+            surface.blit(key_tag, (sx + 10, sy + 8))
+
+            swatch_cx = sx + sk_card_w // 2
+            swatch_cy = sy + 44
+            pygame.draw.circle(surface, skinfo['c_camo'], (swatch_cx, swatch_cy), 20)
+            pygame.draw.circle(surface, skinfo['c_helmet'], (swatch_cx, swatch_cy), 14)
+            pygame.draw.circle(surface, skinfo['c_goggles'], (swatch_cx + 4, swatch_cy - 1), 5)
+            pygame.draw.circle(surface, bcol, (swatch_cx, swatch_cy), 22, 2)
+
+            sname = self.font_main.render(skinfo['name'], True, skinfo['accent_color'] if is_sel else (210, 225, 240))
+            surface.blit(sname, (sx + sk_card_w // 2 - sname.get_width() // 2, sy + 76))
+
+            sdesc = self.font_sm.render(skinfo['desc'][:22], True, (150, 170, 190))
+            surface.blit(sdesc, (sx + sk_card_w // 2 - sdesc.get_width() // 2, sy + 102))
+
+            if is_sel:
+                eq_tag = self.font_sm.render("[ ACTIVE ]", True, (0, 255, 180))
+                surface.blit(eq_tag, (sx + sk_card_w // 2 - eq_tag.get_width() // 2, sy + 132))
+
+        # -------------------------------------------------------------
+        # Bottom Actions: Back and Deploy
+        # -------------------------------------------------------------
+        bar_y = 635
+        back_w = 260
+        deploy_w = 550
+        btn_h = 50
+
+        self.loadout_back_rect = pygame.Rect(right_x, bar_y, back_w, btn_h)
+        pygame.draw.rect(surface, (25, 30, 40), self.loadout_back_rect, border_radius=8)
+        pygame.draw.rect(surface, (60, 75, 95), self.loadout_back_rect, 1, border_radius=8)
+        back_txt = self.font_main.render("< MISSION SETUP [ESC]", True, (180, 200, 220))
+        surface.blit(back_txt, (self.loadout_back_rect.centerx - back_txt.get_width() // 2, bar_y + 14))
+
+        self.loadout_deploy_rect = pygame.Rect(right_x + back_w + 25, bar_y, deploy_w, btn_h)
+        is_pulse = (tick_count // 25) % 2 == 0
+        deploy_bg = (0, 160, 110) if is_pulse else (0, 130, 90)
+        pygame.draw.rect(surface, deploy_bg, self.loadout_deploy_rect, border_radius=8)
+        pygame.draw.rect(surface, (0, 255, 180), self.loadout_deploy_rect, 2, border_radius=8)
+        deploy_txt = self.font_main.render("DEPLOY TO COMBAT [ENTER / SPACE]", True, (255, 255, 255))
+        surface.blit(deploy_txt, (self.loadout_deploy_rect.centerx - deploy_txt.get_width() // 2, bar_y + 14))
+
+    def handle_loadout_click(self, mouse_pos, audio_manager):
+        """Processes clicks on weapon cards, skin cards, deploy button, and back button."""
+        # Check weapon cards
+        for wid, rect in self.loadout_weapon_rects.items():
+            if rect.collidepoint(mouse_pos):
+                if self.selected_weapon_type != wid:
+                    self.selected_weapon_type = wid
+                    audio_manager.play('menu_select', volume=0.85)
+                return 'SELECT_WEAPON'
+
+        # Check skin cards
+        for skid, rect in self.loadout_skin_rects.items():
+            if rect.collidepoint(mouse_pos):
+                if self.selected_skin_id != skid:
+                    self.selected_skin_id = skid
+                    audio_manager.play('menu_select', volume=0.85)
+                return 'SELECT_SKIN'
+
+        # Check deploy
+        if self.loadout_deploy_rect.collidepoint(mouse_pos):
+            audio_manager.play('menu_select', volume=1.0)
+            return 'DEPLOY'
+
+        # Check back
+        if self.loadout_back_rect.collidepoint(mouse_pos):
+            audio_manager.play('menu_select', volume=0.8)
+            return 'BACK'
+
+        return None
 
     def draw_pause_screen(self, surface):
         """Semi-transparent pause overlay with Resume / Restart / Main Menu buttons."""
@@ -739,14 +1156,6 @@ class UIManager:
             return 'HELP'
 
         return None
-
-    def handle_help_click(self, mouse_pos):
-        """Handles tab clicks inside the help modal. Returns True if click consumed a tab."""
-        for i, tr in enumerate(self.help_tab_rects):
-            if tr.collidepoint(mouse_pos):
-                self.help_tab = i
-                return True
-        return False
 
     def draw_victory_screen(self, surface, tick_count, stats):
         """Victory screen with letter grade and detailed score breakdown."""

@@ -128,7 +128,8 @@ class Enemy:
                 effect_manager=effect_manager,
                 audio_manager=audio_manager,
                 listener_pos=player.pos,
-                is_player=False
+                is_player=False,
+                map_manager=map_manager
             )
         elif self.has_los_to_player:
             # Ranged combat with Machine Gun

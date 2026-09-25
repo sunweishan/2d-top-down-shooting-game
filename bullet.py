@@ -5,6 +5,7 @@ Handles continuous collision ray-checks against walls and combat targets to prev
 
 import math
 import pygame
+from effects import SparkParticle
 
 
 def line_intersects_rect(p1, p2, rect):
@@ -65,9 +66,10 @@ def line_segment_intersection(p1, p2, p3, p4):
 
 
 class Bullet:
-    """High-speed projectile dealing 1 damage per hit."""
+    """High-speed projectile dealing damage, with support for wall piercing and rocket room clearance."""
 
-    def __init__(self, x, y, angle_deg, owner='player', speed=850.0, damage=1, shooter=None):
+    def __init__(self, x, y, angle_deg, owner='player', speed=850.0, damage=1, shooter=None,
+                 wall_pierce=False, is_sniper=False, is_rocket=False):
         self.pos = [float(x), float(y)]
         self.prev_pos = [float(x), float(y)]
         self.angle_deg = angle_deg
@@ -76,8 +78,12 @@ class Bullet:
         self.owner = owner  # 'player' or 'enemy'
         self.damage = damage
         self.shooter = shooter
+        self.wall_pierce = wall_pierce
+        self.is_sniper = is_sniper
+        self.is_rocket = is_rocket
         self.alive = True
-        self.lifetime = 1.6  # Seconds before despawning
+        self.lifetime = 2.2 if is_sniper else (2.0 if is_rocket else 1.6)
+        self.smoke_timer = 0.0
 
     def update(self, dt, map_manager, targets, effect_manager, audio_manager, listener_pos):
         """Updates position, performs collision sweeps, and triggers hits/sparks."""
@@ -87,40 +93,98 @@ class Bullet:
         self.lifetime -= dt
         if self.lifetime <= 0:
             self.alive = False
+            if self.is_rocket:
+                self._detonate_rocket(map_manager, targets, effect_manager, audio_manager, listener_pos)
             return
 
         self.prev_pos = [self.pos[0], self.pos[1]]
         self.pos[0] += self.vel[0] * dt
         self.pos[1] += self.vel[1] * dt
 
-        # 1. Check collision against map obstacle walls
+        # Rocket engine smoke/flame particle trail
+        if self.is_rocket:
+            self.smoke_timer += dt
+            if self.smoke_timer >= 0.03:
+                self.smoke_timer = 0.0
+                rad = math.radians(self.angle_deg)
+                back_x = self.pos[0] - math.cos(rad) * 10.0
+                back_y = self.pos[1] - math.sin(rad) * 10.0
+                effect_manager.sparks.append(SparkParticle(back_x, back_y, self.angle_deg - 180.0))
+
+        # 1. Check collision against map obstacle walls. Only explicitly
+        # wall-piercing player projectiles (sniper/rocket) may continue.
         wall_hit, wall_pt = self._check_wall_collision(map_manager)
         if wall_hit:
-            self.alive = False
-            self.pos = [wall_pt[0], wall_pt[1]]
-            effect_manager.add_wall_hit(self.pos[0], self.pos[1], self.angle_deg)
-            audio_manager.play_spatial('hit_wall', self.pos, listener_pos, base_volume=0.85)
-            return
+            breached_walls = []
+            if self.is_rocket and self.owner == 'player' and hasattr(map_manager, 'breach_walls'):
+                breached_walls = map_manager.breach_walls(self.prev_pos, self.pos)
+                for _, breach_point in breached_walls:
+                    if breach_point is not None:
+                        effect_manager.add_wall_hit(breach_point[0], breach_point[1], self.angle_deg)
+
+                if breached_walls:
+                    # The rocket has entered the next space through the new
+                    # opening. Detonate just inside it so every enemy in that
+                    # room is cleared, even when the projectile misses them.
+                    travel_distance = math.hypot(self.vel[0], self.vel[1])
+                    if travel_distance > 0:
+                        push_distance = 56.0
+                        self.pos[0] += (self.vel[0] / travel_distance) * push_distance
+                        self.pos[1] += (self.vel[1] / travel_distance) * push_distance
+                    self.alive = False
+                    self._detonate_rocket(map_manager, targets, effect_manager, audio_manager, listener_pos)
+                    return
+
+                # The perimeter is indestructible. A rocket hitting it stops
+                # and detonates instead of bypassing the arena boundary.
+                self.alive = False
+                self.pos = [wall_pt[0], wall_pt[1]]
+                self._detonate_rocket(map_manager, targets, effect_manager, audio_manager, listener_pos)
+                return
+
+            if self.wall_pierce:
+                # Sniper and player-fired rockets penetrate walls. Rockets
+                # also remove the crossed interior wall above.
+                pass
+            else:
+                # Machine-gun and enemy rounds stop at the first wall, so they
+                # cannot damage a target on the opposite side.
+                self.alive = False
+                self.pos = [wall_pt[0], wall_pt[1]]
+                effect_manager.add_wall_hit(self.pos[0], self.pos[1], self.angle_deg)
+                audio_manager.play_spatial('hit_wall', self.pos, listener_pos, base_volume=0.85)
+                return
 
         # 2. Check collision against target characters
         for target in targets:
             if not target.alive:
                 continue
-            # Distance from target center to bullet segment
             target_hit, hit_pt = line_intersects_rect(
                 (self.prev_pos[0], self.prev_pos[1]),
                 (self.pos[0], self.pos[1]),
                 target.get_hitbox()
             )
             if target_hit:
-                self.alive = False
                 self.pos = [hit_pt[0], hit_pt[1]]
-                if self.shooter and hasattr(self.shooter, 'shots_hit'):
-                    self.shooter.shots_hit += 1
-                target.take_damage(self.damage, attacker_type=self.owner)
-                effect_manager.add_blood_splatter(self.pos[0], self.pos[1], self.angle_deg)
-                audio_manager.play_spatial('hit_body', self.pos, listener_pos, base_volume=0.9)
-                return
+                if self.is_rocket:
+                    self.alive = False
+                    self._detonate_rocket(map_manager, targets, effect_manager, audio_manager, listener_pos)
+                    return
+                else:
+                    self.alive = False
+                    if self.shooter and hasattr(self.shooter, 'shots_hit'):
+                        self.shooter.shots_hit += 1
+                    target.take_damage(self.damage, attacker_type=self.owner)
+                    effect_manager.add_blood_splatter(self.pos[0], self.pos[1], self.angle_deg, count=18 if self.is_sniper else 12)
+                    audio_manager.play_spatial('hit_body', self.pos, listener_pos, base_volume=0.9)
+                    return
+
+    def _detonate_rocket(self, map_manager, targets, effect_manager, audio_manager, listener_pos):
+        """Detonates rocket with massive explosion and eliminates all hostiles in the affected room/space."""
+        audio_manager.play_spatial('explosion', self.pos, listener_pos, base_volume=1.0)
+        effect_manager.add_explosion(self.pos[0], self.pos[1], radius=180)
+        if hasattr(map_manager, 'clear_room_enemies'):
+            map_manager.clear_room_enemies(self.pos, targets, effect_manager, shooter=self.shooter)
 
     def _check_wall_collision(self, map_manager):
         """Finds closest wall intersection along trajectory from prev_pos to pos."""
@@ -143,14 +207,38 @@ class Bullet:
         return False, None
 
     def draw(self, surface, camera_offset=(0, 0)):
-        """Renders illuminated tracer line."""
+        """Renders illuminated projectile tracer or rocket sprite."""
         sx1 = int(self.prev_pos[0] - camera_offset[0])
         sy1 = int(self.prev_pos[1] - camera_offset[1])
         sx2 = int(self.pos[0] - camera_offset[0])
         sy2 = int(self.pos[1] - camera_offset[1])
 
-        # Outer glowing tracer (orange/amber)
-        tracer_color = (255, 180, 50) if self.owner == 'player' else (255, 90, 60)
-        pygame.draw.line(surface, tracer_color, (sx1, sy1), (sx2, sy2), 3)
-        # Inner white-hot core
-        pygame.draw.line(surface, (255, 255, 220), (sx1, sy1), (sx2, sy2), 1)
+        if self.is_rocket:
+            # Render high-explosive rocket missile
+            rad = math.radians(self.angle_deg)
+            cos_a = math.cos(rad)
+            sin_a = math.sin(rad)
+            tip_x = sx2
+            tip_y = sy2
+            tail_x = int(sx2 - cos_a * 16.0)
+            tail_y = int(sy2 - sin_a * 16.0)
+
+            # Fiery rocket exhaust glow
+            pygame.draw.line(surface, (255, 100, 20), (tail_x, tail_y), (int(tail_x - cos_a * 8), int(tail_y - sin_a * 8)), 4)
+            pygame.draw.line(surface, (255, 240, 120), (tail_x, tail_y), (int(tail_x - cos_a * 4), int(tail_y - sin_a * 4)), 2)
+            # Rocket body
+            pygame.draw.line(surface, (45, 55, 45), (tail_x, tail_y), (tip_x, tip_y), 4)
+            # Red warhead tip
+            pygame.draw.circle(surface, (255, 50, 40), (tip_x, tip_y), 3)
+
+        elif self.is_sniper:
+            # High-velocity sniper piercing beam (electric cyan / neon blue)
+            pygame.draw.line(surface, (0, 180, 255), (sx1, sy1), (sx2, sy2), 4)
+            pygame.draw.line(surface, (180, 245, 255), (sx1, sy1), (sx2, sy2), 2)
+            pygame.draw.circle(surface, (255, 255, 255), (sx2, sy2), 3)
+
+        else:
+            # Standard machine gun tracer
+            tracer_color = (255, 180, 50) if self.owner == 'player' else (255, 90, 60)
+            pygame.draw.line(surface, tracer_color, (sx1, sy1), (sx2, sy2), 3)
+            pygame.draw.line(surface, (255, 255, 220), (sx1, sy1), (sx2, sy2), 1)
